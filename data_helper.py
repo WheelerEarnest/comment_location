@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 import gensim
-
+from gensim.models import KeyedVectors
 from collections import Counter
 from torch.utils.data import Dataset
 
@@ -95,8 +95,8 @@ def read_embeddings(embeddings_path):
     code_embeds
         w2v model
 
-    code_embeds_dim
-        dimensions of the w2v model
+    code_embeds_dim: int
+        dimensions of the model vectors
     """
     code_embeds = gensim.models.KeyedVectors.load_word2vec_format(embeddings_path, binary=True)
     comm_embeds = None
@@ -122,7 +122,7 @@ def create_vocabularies(word_counts, vocab_size, min_word_freq):
 
     Returns
     -------
-    words: list
+    words: list of str
         list of all the words in the vocabulary
     word_w2i: dict
         the word is the key, and the id is the value
@@ -142,7 +142,6 @@ def create_vocabularies(word_counts, vocab_size, min_word_freq):
     word_w2i, word_i2w = assign_vocab_ids(words)
 
     return words, word_w2i, word_i2w
-
 
 
 def assign_vocab_ids(words):
@@ -165,11 +164,89 @@ def assign_vocab_ids(words):
     return word_to_id, id_to_word
 
 
+def prepare_loc_data(file_seqs, max_loc_len, vocab, words_w2i, words_i2w, w2v_models, w2v_dims):
+    """
 
-def create_dataset(data_file, max_len_stmt, pretrained_embeddings_path):
+    Parameters
+    ----------
+    file_seqs: list of LineOfCode objects
+    max_loc_len: int
+        max length of a line of code
+    vocab: list of str
+        all the words in the vocabulary
+    words_w2i: dict
+    words_i2w: dict
+    w2v_models
+    w2v_dims
+
+    Returns
+    -------
+    loc_id_to_coded: dict
+        Key format is: "fileid#line_number"
+        value is the coded loc
+    """
+    loc_id_to_coded = {}
+
+    for file in file_seqs:
+        for loc_num in range(len(file)):
+            loc = file.get_loc(loc_num)
+            loc_code = loc.code
+
+            loc_encoded = encode_words(loc_code, words_w2i, False)
+            loc_embedded = get_avg_embedding(loc_encoded, words_i2w, w2v_models, w2v_dims)
+
+            loc_id_to_coded[str(loc.file_id) + "#" + str(loc.line_number)] = loc_encoded
+
+    return loc_id_to_coded
+
+
+def encode_words(words, words_w2i, ignore_unknown):
+    encoded = []
+    # Loop through the words and append if found in vocabulary
+    for w in words:
+        if w in words_w2i:
+            encoded.append(words_w2i[w])
+        elif not ignore_unknown:
+            encoded.append(words_w2i[UNKNOWN_WORD])
+    return encoded
+
+
+def get_avg_embedding(word_ids, words_i2w, w2v_model, w2v_dim):
+    """
+    Averages the embeddings for a line of code. If w2v_model is none, then a zero vector is returned.
+    Parameters
+    ----------
+    word_ids
+    words_i2w
+    w2v_model
+    w2v_dim
+
+    Returns
+    -------
+    word_sum : numpy.ndarray
+    """
+
+    word_sum = np.zeros(w2v_dim, dtype=np.float32)
+    if w2v_model == None:
+        return word_sum
+    word_count = 0
+    for wid in word_ids:
+        word = words_i2w[wid]
+        if word != UNKNOWN_WORD and word in w2v_model.vocab:
+            word_sum += w2v_model.wv[word]
+            word_count += 1
+    if word_count > 0:
+        return word_sum / word_count
+    return word_sum
+
+
+def create_dataset(data_file, max_len_stmt, pretrained_embeddings_path, max_vocab_size, min_word_freq):
     data, words = read_comment_files(data_file, 100)
 
     embeddings, embeddings_dim = read_embeddings(pretrained_embeddings_path)
+    vocab, vocab_w2i, vocab_i2w = create_vocabularies(words, max_vocab_size, min_word_freq)
+
+    loc_id_to_coded = prepare_loc_data(data, max_len_stmt, vocab, vocab_w2i, vocab_i2w, embeddings, embeddings_dim)
 
 
 class LineOfCode(object):
@@ -223,8 +300,67 @@ class FileOfCode(object):
 
 class CommentDataset(Dataset):
 
-    def __init__(self, files_of_code):
+    def __init__(self, files_of_code, loc_id_to_coded,
+                 vocab, nblks, nlocs):
+        """
+
+        Parameters
+        ----------
+        files_of_code
+        loc_id_to_coded
+        vocab
+        nblks: int
+            max blocks per sequence
+        nlocs: int
+            max locs per block
+        """
         self.files = files_of_code
+        self.loc_id_to_coded = loc_id_to_coded
+        self.vocab = vocab
+        self.nblks = nblks
+        self.nlocs = nlocs
 
     def __getitem__(self, index):
         return self.files[index]
+
+    def __prepare_batch_data(self, files_of_code):
+        data_by_seq = []
+        cur_seq = []
+        count_true_blks = 0
+
+        # Loop through our files and arrange blocks sequentially
+        for file in files_of_code:
+            if len(data_by_seq) == 0 or data_by_seq[-1] != []:
+                data_by_seq.append([])
+
+            # Loop through each loc and group by block boundary
+            for loc_num in range(len(file)):
+                loc = file.get_loc(loc_num)
+                loc_coded = self.loc_id_to_coded[str(loc.file_id) + "#" + str(loc.line_number)]
+                loc_bnd = loc.block_bnd
+
+                if loc_bnd == 1:
+                    if len(cur_seq) > 0:
+                        data_by_seq[-1].append(cur_seq)
+                        cur_seq = []
+
+                    # If we're past the max blocks then create new sequence
+                    if len(data_by_seq[-1]) >= self.nblks:
+                        data_by_seq.append([])
+                    count_true_blks += 1
+                    cur_seq.append(loc)
+
+                elif loc_bnd == 2 or loc_bnd == 3:
+                    if len(cur_seq) < self.nlocs:
+                        cur_seq.append(loc)
+
+            if len(cur_seq) > 0:
+                data_by_seq[-1].append(cur_seq)
+                cur_seq = []
+
+            count_blocks = 0
+            for i in range(len(data_by_seq)):
+                for j in range(len(data_by_seq[i])):
+                    count_blocks += 1
+
+            assert count_true_blks == count_blocks, "Number of blocks read %d doesn't match true number of blocks %d" % (count_blocks, count_true_blks)
