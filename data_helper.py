@@ -301,7 +301,7 @@ class FileOfCode(object):
 class CommentDataset(Dataset):
 
     def __init__(self, files_of_code, loc_id_to_coded,
-                 vocab, nblks, nlocs):
+                 vocab, vocab_w2i, max_blocks, max_locs, max_words):
         """
 
         Parameters
@@ -309,27 +309,42 @@ class CommentDataset(Dataset):
         files_of_code
         loc_id_to_coded
         vocab
-        nblks: int
+        vocab_w2i
+        max_blocks: int
             max blocks per sequence
-        nlocs: int
+        max_locs: int
             max locs per block
+        max_words: int
+            max words per loc
         """
         self.files = files_of_code
         self.loc_id_to_coded = loc_id_to_coded
         self.vocab = vocab
-        self.nblks = nblks
-        self.nlocs = nlocs
+        self.vocab_w2i = vocab_w2i
+        self.max_blocks = max_blocks
+        self.max_locs = max_locs
+        self.max_words = max_words
+        self.data, self.data_weights, self.labels, self.label_weights = self._prepare_batch_data()
 
     def __getitem__(self, index):
         return self.files[index]
 
-    def __prepare_batch_data(self, files_of_code):
+    def _prepare_batch_data(self):
+        """
+
+        Returns
+        -------
+        data: tensor int32
+        data_weights: tensor float32
+        labels: tensor int32
+        label_weights: tensor float32
+        """
         data_by_seq = []
         cur_seq = []
         count_true_blks = 0
 
         # Loop through our files and arrange blocks sequentially
-        for file in files_of_code:
+        for file in self.files:
             if len(data_by_seq) == 0 or data_by_seq[-1] != []:
                 data_by_seq.append([])
 
@@ -345,15 +360,16 @@ class CommentDataset(Dataset):
                         cur_seq = []
 
                     # If we're past the max blocks then create new sequence
-                    if len(data_by_seq[-1]) >= self.nblks:
+                    if len(data_by_seq[-1]) >= self.max_blocks:
                         data_by_seq.append([])
                     count_true_blks += 1
                     cur_seq.append(loc)
 
                 elif loc_bnd == 2 or loc_bnd == 3:
-                    if len(cur_seq) < self.nlocs:
+                    if len(cur_seq) < self.max_locs:
                         cur_seq.append(loc)
 
+            # If we the end of a file and the current sequence is not empty, append it and start a new sequence
             if len(cur_seq) > 0:
                 data_by_seq[-1].append(cur_seq)
                 cur_seq = []
@@ -363,4 +379,30 @@ class CommentDataset(Dataset):
                 for j in range(len(data_by_seq[i])):
                     count_blocks += 1
 
-            assert count_true_blks == count_blocks, "Number of blocks read %d doesn't match true number of blocks %d" % (count_blocks, count_true_blks)
+        assert count_true_blks == count_blocks, "Number of blocks read %d doesn't match true number of blocks %d" % (
+            count_blocks, count_true_blks)
+
+        total_seqs = len(data_by_seq)
+        data = np.zeros((total_seqs, self.max_blocks, self.max_locs, self.max_words), dtype=np.int32)
+        data_wts = np.zeros((total_seqs, self.max_blocks, self.max_locs, self.max_words), dtype=np.float32)
+        labels = np.zeros((total_seqs, self.max_blocks), dtype=np.int32)
+        label_weights = np.zeros((total_seqs, self.max_blocks), dtype=np.float32)
+
+        for i in range(total_seqs):
+            for j in range(self.max_blocks):
+                for k in range(self.max_locs):
+                    # Check to see if we have moved past the sequence data, and if so, insert an unknown word token
+                    if j >= len(data_by_seq[i]) or k >= len(data_by_seq[i][j]):
+                        wid_datum = np.array([self.vocab_w2i[UNKNOWN_WORD]])
+
+                    else:
+                        line_of_code = data_by_seq[i][j][k]
+                        wid_datum = np.array(self.loc_id_to_coded[str(line_of_code.file_id) +
+                                                                  "#" + str(line_of_code.line_number)])
+                        labels[i][j] = data_by_seq[i][j][0].label
+                        label_weights[i][j] = 1.0
+
+                    data[i][j][k][0:wid_datum.shape[0]] = wid_datum
+                    data_wts[i][j][k][0:wid_datum.shape[0]] = np.ones(wid_datum.shape[0])
+
+        return torch.as_tensor(data), torch.as_tensor(data_wts), torch.as_tensor(labels), torch.as_tensor(label_weights)
