@@ -4,7 +4,6 @@ Author: Wheeler Earnest
 """
 
 import numpy as np
-import pandas as pd
 import torch
 import gensim
 from gensim.models import KeyedVectors
@@ -99,10 +98,7 @@ def read_embeddings(embeddings_path):
         dimensions of the model vectors
     """
     code_embeds = gensim.models.KeyedVectors.load_word2vec_format(embeddings_path, binary=True)
-    comm_embeds = None
-
     code_embeds_dim = code_embeds.vector_size
-    comm_embeds_dim = None
 
     return code_embeds, code_embeds_dim
 
@@ -164,18 +160,17 @@ def assign_vocab_ids(words):
     return word_to_id, id_to_word
 
 
-def prepare_loc_data(file_seqs, max_loc_len, vocab, words_w2i, words_i2w, w2v_models, w2v_dims):
+def prepare_loc_data(file_seqs, words_w2i, words_i2w, w2v_models, w2v_dims):
     """
 
     Parameters
     ----------
     file_seqs: list of LineOfCode objects
-    max_loc_len: int
-        max length of a line of code
-    vocab: list of str
-        all the words in the vocabulary
     words_w2i: dict
+        key: str
+        val: int
     words_i2w: dict
+        reverse of prev
     w2v_models
     w2v_dims
 
@@ -240,13 +235,34 @@ def get_avg_embedding(word_ids, words_i2w, w2v_model, w2v_dim):
     return word_sum
 
 
-def create_dataset(data_file, max_len_stmt, pretrained_embeddings_path, max_vocab_size, min_word_freq):
+def create_dataset(data_file, max_len_stmt, pretrained_embeddings_path, max_vocab_size, min_word_freq, max_locs, max_words):
+    """
+
+    Parameters
+    ----------
+    data_file: str
+        Path to the data file
+    max_len_stmt: int
+        Maximum length for each line of code
+    pretrained_embeddings_path: str
+        Path to the file containing pretrained embeddings
+    max_vocab_size:
+        Maximum size the
+    min_word_freq
+    max_locs
+    max_words
+
+    Returns
+    -------
+    Dataset that has the sequences, sequence weights, labels, and label weights
+    """
     data, words = read_comment_files(data_file, 100)
 
     embeddings, embeddings_dim = read_embeddings(pretrained_embeddings_path)
     vocab, vocab_w2i, vocab_i2w = create_vocabularies(words, max_vocab_size, min_word_freq)
 
     loc_id_to_coded = prepare_loc_data(data, max_len_stmt, vocab, vocab_w2i, vocab_i2w, embeddings, embeddings_dim)
+    return CommentDataset(data, loc_id_to_coded, vocab, vocab_w2i, max_locs, max_words)
 
 
 class LineOfCode(object):
@@ -327,7 +343,10 @@ class CommentDataset(Dataset):
         self.data, self.data_weights, self.labels, self.label_weights = self._prepare_batch_data()
 
     def __getitem__(self, index):
-        return self.files[index]
+        return self.data[index], self.data_weights[index], self.labels[index], self.label_weights[index]
+
+    def __len__(self):
+        return len(self.data)
 
     def _prepare_batch_data(self):
         """
@@ -374,10 +393,10 @@ class CommentDataset(Dataset):
                 data_by_seq[-1].append(cur_seq)
                 cur_seq = []
 
-            count_blocks = 0
-            for i in range(len(data_by_seq)):
-                for j in range(len(data_by_seq[i])):
-                    count_blocks += 1
+        count_blocks = 0
+        for i in range(len(data_by_seq)):
+            for j in range(len(data_by_seq[i])):
+                count_blocks += 1
 
         assert count_true_blks == count_blocks, "Number of blocks read %d doesn't match true number of blocks %d" % (
             count_blocks, count_true_blks)
