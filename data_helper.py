@@ -32,6 +32,7 @@ def read_comment_files(data_file, max_line_length):
         Counter keeping track of the occurrences of each word
 
     """
+    print("Reading data file")
     d_file = open(data_file, 'r')
     line_id = -1
 
@@ -96,10 +97,10 @@ def read_embeddings(embeddings_path):
     code_embeds_dim: int
         dimensions of the model vectors
     """
-    code_embeds = gensim.models.KeyedVectors.load_word2vec_format(embeddings_path, binary=True)
-    code_embeds_dim = code_embeds.vector_size
+    # code_embeds = gensim.models.KeyedVectors.load_word2vec_format(embeddings_path, binary=True)
+    # code_embeds_dim = code_embeds.vector_size
 
-    return code_embeds, code_embeds_dim
+    # return code_embeds, code_embeds_dim
 
 
 def create_vocabularies(word_counts, vocab_size, min_word_freq):
@@ -124,6 +125,7 @@ def create_vocabularies(word_counts, vocab_size, min_word_freq):
     word_i2w: dict
         reverse of the other
     """
+    print("Building vocabulary")
     size_without_specials = min(len(word_counts), vocab_size)
     if size_without_specials == vocab_size:
         size_without_specials -= len(SPECIAL_SYMBOLS)
@@ -370,6 +372,7 @@ class CommentDataset(Dataset):
         labels: tensor int32
         label_weights: tensor float32
         """
+        print("Building dataset")
         data_by_seq = []
         cur_seq = []
         count_true_blks = 0
