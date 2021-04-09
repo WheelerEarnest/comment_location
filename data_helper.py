@@ -4,9 +4,6 @@ Author: Wheeler Earnest
 """
 
 import numpy as np
-import torch
-import gensim
-from gensim.models import KeyedVectors
 from collections import Counter
 from torch.utils.data import Dataset
 
@@ -51,7 +48,7 @@ def read_comment_files(data_file, max_line_length):
         line_id += 1
         file_id, line_number, block_bnd, label, _, _, code, _, _ = line.strip().split("\t")
 
-        if code == COMMENT_ONLY_LINE or EMPTY_LINE:
+        if code == COMMENT_ONLY_LINE or code == EMPTY_LINE:
             continue
 
         # Clean up the code and count the words
@@ -66,7 +63,7 @@ def read_comment_files(data_file, max_line_length):
         # Check to see if this loc is in the same file as the previous
         if file_id != current_file_id:
 
-            if current_file_contents.len() > 0:
+            if len(current_file_contents) > 0:
                 files_of_code.append(current_file_contents)
                 current_file_contents = FileOfCode()
 
@@ -74,7 +71,7 @@ def read_comment_files(data_file, max_line_length):
 
         current_file_contents.add_loc(current_loc)
 
-    if current_file_contents.len() > 0:
+    if len(current_file_contents) > 0:
         files_of_code.append(current_file_contents)
 
     d_file.close()
@@ -84,6 +81,8 @@ def read_comment_files(data_file, max_line_length):
 
 def read_embeddings(embeddings_path):
     """
+    Unnecessary, but I'm leaving it in anyway
+
     Parameters
     ----------
     embeddings_path: str
@@ -156,11 +155,11 @@ def assign_vocab_ids(words):
 
     """
     word_to_id = dict(zip(words, range(len(words))))
-    id_to_word = dict(zip(words, range(len(words))))
+    id_to_word = dict(zip(range(len(words)), words))
     return word_to_id, id_to_word
 
 
-def prepare_loc_data(file_seqs, words_w2i, words_i2w, w2v_models, w2v_dims):
+def prepare_loc_data(file_seqs, words_w2i, words_i2w):
     """
 
     Parameters
@@ -188,7 +187,7 @@ def prepare_loc_data(file_seqs, words_w2i, words_i2w, w2v_models, w2v_dims):
             loc_code = loc.code
 
             loc_encoded = encode_words(loc_code, words_w2i, False)
-            loc_embedded = get_avg_embedding(loc_encoded, words_i2w, w2v_models, w2v_dims)
+            # loc_embedded = get_avg_embedding(loc_encoded, words_i2w, w2v_models, w2v_dims)
 
             loc_id_to_coded[str(loc.file_id) + "#" + str(loc.line_number)] = loc_encoded
 
@@ -196,9 +195,22 @@ def prepare_loc_data(file_seqs, words_w2i, words_i2w, w2v_models, w2v_dims):
 
 
 def encode_words(words, words_w2i, ignore_unknown):
+    """
+
+    Parameters
+    ----------
+    words: str
+    words_w2i: dict
+    ignore_unknown: bool
+
+    Returns
+    -------
+    encoded: list
+        List of integers representing 'words'
+    """
     encoded = []
     # Loop through the words and append if found in vocabulary
-    for w in words:
+    for w in words.strip().split():
         if w in words_w2i:
             encoded.append(words_w2i[w])
         elif not ignore_unknown:
@@ -235,7 +247,7 @@ def get_avg_embedding(word_ids, words_i2w, w2v_model, w2v_dim):
     return word_sum
 
 
-def create_dataset(data_file, max_len_stmt, pretrained_embeddings_path, max_vocab_size, min_word_freq, max_locs, max_words):
+def create_dataset(data_file, max_vocab_size, min_word_freq, max_blocks, max_locs, max_words):
     """
 
     Parameters
@@ -258,11 +270,11 @@ def create_dataset(data_file, max_len_stmt, pretrained_embeddings_path, max_voca
     """
     data, words = read_comment_files(data_file, 100)
 
-    embeddings, embeddings_dim = read_embeddings(pretrained_embeddings_path)
+    # embeddings, embeddings_dim = read_embeddings(pretrained_embeddings_path)
     vocab, vocab_w2i, vocab_i2w = create_vocabularies(words, max_vocab_size, min_word_freq)
 
-    loc_id_to_coded = prepare_loc_data(data, max_len_stmt, vocab, vocab_w2i, vocab_i2w, embeddings, embeddings_dim)
-    return CommentDataset(data, loc_id_to_coded, vocab, vocab_w2i, max_locs, max_words)
+    loc_id_to_coded = prepare_loc_data(data, vocab_w2i, vocab_i2w)
+    return CommentDataset(data, loc_id_to_coded, vocab, vocab_w2i, max_blocks, max_locs, max_words)
 
 
 class LineOfCode(object):
@@ -281,7 +293,7 @@ class LineOfCode(object):
         block_bnd: int
              -1 if NA, 1 if start of code block, 2 if middle, and 3 if end
 
-        code: string
+        code: str
             Words on the line of code
 
         label: int
@@ -289,11 +301,11 @@ class LineOfCode(object):
 
         """
 
-        self.file_id = file_id
-        self.line_number = line_number
-        self.block_bnd = block_bnd
+        self.file_id = int(file_id)
+        self.line_number = int(line_number)
+        self.block_bnd = int(block_bnd)
         self.code = code
-        self.label = label
+        self.label = int(label)
 
 
 class FileOfCode(object):
@@ -307,7 +319,7 @@ class FileOfCode(object):
     def add_loc(self, loc):
         self.locs.append(loc)
 
-    def len(self):
+    def __len__(self):
         return len(self.locs)
 
     def get_loc(self, idx):
@@ -424,4 +436,4 @@ class CommentDataset(Dataset):
                     data[i][j][k][0:wid_datum.shape[0]] = wid_datum
                     data_wts[i][j][k][0:wid_datum.shape[0]] = np.ones(wid_datum.shape[0])
 
-        return torch.as_tensor(data), torch.as_tensor(data_wts), torch.as_tensor(labels), torch.as_tensor(label_weights)
+        return data, data_wts, labels, label_weights
